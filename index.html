@@ -1,0 +1,221 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI画像学習＆識別 by TensorFlow.js</title>
+<style>
+.box {
+  padding: 1em;
+  border: 1px solid black;
+  margin: 1em 0em;
+}
+.credit a {
+  color: gray !important;
+}
+</style>
+</head><body>
+
+<h1>AI画像学習＆識別 by TensorFlow.js</h1>
+<div id=learnbox class=box>まずは学習したい写真群をここにドロップ！<br>ファイル名の先頭をIDとして使うよ<br>例）1_neko_tama.jpg, 2_inu_pochi.jpg</div>
+<div id=predictbox class=box>学習が終わったら、識別したい写真をここにドロップしてね</div>
+<div id=output class=box></div>
+
+<div class=credit>
+App: CC BY <a href=https://fukuno.jig.jp/2645>TensorFlow.jsを使ってブラウザだけでAI画像識別と学習</a><br>
+API: <a href=https://www.tensorflow.org/js>TensorFlow.js</a><br>
+</div>
+
+<script>'use strict'
+
+function log(s) {
+  output.innerHTML = s
+}
+function predicted(id, out) {
+  output.innerHTML = "識別した結果は" + id + "番です！"
+  
+  // 確からしさを加える
+  for (let i = 0; i < out.length; i++) {
+    output.innerHTML += "<br>" + out[i].id + "番 確度：" + (out[i].acc * 100).toFixed(2) + "%"
+  }
+}
+
+</script>
+
+<!-- using TensorFlow.js -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"></script>
+<script>'use strict'
+
+window.onload = async function() {
+  const inputWidth = 28
+  const inputHeight = 28
+  const inputGrayscale = false
+
+  const inputChannels = inputGrayscale ? 1 : 3
+  const ninputs = inputWidth * inputHeight * inputChannels
+
+  const modelname = "imglearn"
+
+  let model
+
+  try {
+    model = await tf.loadLayersModel('indexeddb://' + modelname)
+    log("学習モデル読み込み完了")
+  } catch (e) {
+  }
+  
+  // 学習モデル
+  const makeModel = function(ntypes) {
+    const model = tf.sequential()
+    model.add(tf.layers.dense({ units: 64, inputShape: [ ninputs ] }))
+    model.add(tf.layers.dense({ units: 64, activation: 'relu' }))
+    model.add(tf.layers.dense({ units: ntypes, activation: 'softmax' }))
+    model.compile({ loss: 'meanSquaredError', optimizer: 'sgd' })
+    return model
+  }
+
+  // UX / file drop
+  const drop = learnbox // document.body
+	drop.addEventListener("dragover", function(e) {
+		e.preventDefault()
+  }, false)
+	drop.addEventListener("drop", async function(e) {
+    e.preventDefault()
+    clearData()
+    const files = event.dataTransfer.files
+		for (let i = 0; i < files.length; i++) {
+      const f = files[i]
+      try {
+        const img = await loadImage(f)
+        const data = getImageDataArray(img)
+        const tagid = parseInt(f.name.substring(0, f.name.indexOf('_')))
+        addData(data, tagid)
+        log((i + 1) + "/" + files.length + " " + f.name + " -> " + tagid)
+        console.log(f.name, tagid)
+      } catch (ex) {
+        console.log(f.name, ex)
+      }
+    }
+    
+    log("学習中...")
+    await wait(10)
+    await learn()
+    await model.save('indexeddb://' + modelname)
+    log("学習完了")
+  }, false)
+  
+  const drop2 = predictbox
+  drop2.addEventListener("dragover", function(e) {
+		e.preventDefault()
+	}, false)
+	drop2.addEventListener("drop", async function(e) {
+		e.preventDefault()
+    if (!model) {
+      log("まずは学習させてね")
+      return
+    }
+    const files = event.dataTransfer.files
+		for (let i = 0; i < files.length; i++) {
+      const f = files[i]
+      const img = await loadImage(f)
+      const out = predict(img)
+      predicted(out[0].id, out)
+      break
+		}
+  }, false)
+	const loadImage = async function(f) {
+    return new Promise(function(resolve, reject) {
+      if (!f.type.match("image.*")) {
+        reject("not image file")
+        return
+      }
+      const reader = new FileReader()
+      reader.onerror = function(e) {
+        reject("can't read")
+      }
+      reader.onload = function(e) {
+        const img = new Image()
+        img.src = e.target.result
+        img.onload = function() {
+          resolve(this)
+        }
+      }
+      reader.readAsDataURL(f)
+    })
+  }
+
+  // 学習用データ
+  const data = { x: [], y: [] }
+  const clearData = function() {
+    data.x = []
+    data.y = []
+  }
+  const addData = function(x, ny) {
+    data.x.push(x)
+    data.y.push(parseInt(ny))
+  }
+  // 学習
+  const learn = async function() {
+    let max = 0
+    for (let i = 0; i < data.y.length; i++) {
+      if (data.y[i] > max)
+        max = data.y[i]
+    }
+    const ntypes = max + 1
+    const datay2 = []
+    for (let i = 0; i < data.y.length; i++) {
+      const ny = data.y[i]
+      const y = []
+      for (let j = 0; j < ntypes; j++)
+        y.push(j == ny ? 1 : 0)
+      datay2.push(y)
+    }
+    model = makeModel(ntypes)
+
+    const xs = tf.tensor2d(data.x, [ data.x.length, ninputs ], 'float32')
+    const ys = tf.tensor2d(datay2, [ datay2.length, ntypes ], 'float32')
+
+    //await model.fit(xs, ys, { epochs: 100 })
+    await model.fit(xs, ys)
+  }
+  function predict(pimage) {
+    const imageData = getImageDataArray(pimage)
+    const scores = tf.tidy(() => {
+      const input = tf.tensor2d(imageData, [ 1, ninputs ], 'float32')
+      const res = model.predict(input).dataSync()
+      return res
+    })
+    const out = []
+    for (let i = 0; i < scores.length; i++) {
+      out.push({ id: i, acc: scores[i] })
+    }
+    out.sort(function(a, b) { return b.acc - a.acc })
+    return out
+  }
+  // util
+  const getImageDataArray = function(image) {
+    const w = inputWidth
+    const h = inputHeight
+    const tmp = document.createElement('canvas').getContext('2d')
+    tmp.drawImage(image, 0, 0, w, h) // resize
+    let id = tmp.getImageData(0, 0, w, h)
+    const data = []
+    if (inputChannels == 1) { // grayscale
+      for (let i = 0; i < id.data.length; i += 4) {
+        data.push(((id.data[i] + id.data[i + 1] + id.data[i + 2]) / (3 * 255))) // convert grayscale
+      }
+    } else { // fullcolor
+      for (let i = 0; i < id.data.length; i += 4) {
+        data.push(id.data[i] / 255)
+        data.push(id.data[i + 1] / 255)
+        data.push(id.data[i + 2] / 255)
+      }
+    }
+    return data
+  }
+  const wait = async function(ms) {
+    return new Promise(function(resolve) {
+      setTimeout(resolve, ms)
+    })
+  }
+}
+</script>
+</body>
+</html>
